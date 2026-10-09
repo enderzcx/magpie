@@ -48,7 +48,7 @@ var Vars = []string{
 	// Qoder's two builds, the global site's and China's
 	"QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR",
 	// Grok: its home, and where its CLI is installed
-	"GROK_HOME", "GROK_BIN_DIR",
+	"GROK_HOME", "GROK_BIN_DIR", "GROK_BOT_HOME",
 	// Kimi Code and its shared folder
 	"KIMI_CODE_HOME", "KIMI_SHARE_DIR",
 	// Qwen Code's home, ~/.qwen without it

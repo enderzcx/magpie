@@ -107,6 +107,7 @@ func All() []*Agent {
 		qoder(home),
 		qoderCN(home),
 		grok(home),
+		grokBot(home),
 		zcode(home),
 		workbuddy(home),
 		codebuddy(home),
