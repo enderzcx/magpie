@@ -361,6 +361,10 @@ func run(args []string) error {
 	case 1:
 		return list([]*agent.Agent{a}, true, -1)
 	case 2:
+		if args[1] == "launch" && a.Launch != nil {
+			fmt.Println(a.Launch())
+			return nil
+		}
 		if args[1] == "default" {
 			if a.Wired() {
 				return disconnect(a)
