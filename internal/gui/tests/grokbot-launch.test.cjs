@@ -6,6 +6,7 @@ const { chromium, webkit } = require("playwright");
 const assets = path.resolve(__dirname, "../assets");
 const prompt = "Run this cloud installation command: synthetic command";
 const labels = { en: "Copy installation prompt", zh: "复制安装提示词", "zh-TW": "複製安裝提示詞", ja: "インストール用プロンプトをコピー", de: "Installationsprompt kopieren" };
+const copiedLabels = {en:"Copied — send it to Grok Bot",zh:"已复制，请发给 Grok Bot","zh-TW":"已複製，請傳給 Grok Bot",ja:"コピーしました。Grok Bot に送信してください",de:"Kopiert — an Grok Bot senden"};
 for (const engine of ["chromium", "webkit"]) test(engine + ": Grok Bot cloud prompt", async (t) => {
  const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
  t.after(() => browser.close());
@@ -31,7 +32,14 @@ for (const engine of ["chromium", "webkit"]) test(engine + ": Grok Bot cloud pro
   const row = page.locator('.row.agent[data-id="grok-bot"]'); await row.waitFor();
   const button = row.locator(".field.launch"); assert.ok((await button.getAttribute("title")).startsWith(label));
   const copied = page.waitForResponse(r => new URL(r.url()).pathname === "/api/copy");
-  await button.click(); await copied; assert.deepEqual(copies,[prompt]); assert.deepEqual(errors,[]);
+  await button.click(); await copied; assert.deepEqual(copies,[prompt]);
+  await row.locator(".ag-link").click();
+  const detail = row.locator(".ag-exp"); await detail.waitFor();
+  const detailCopy = detail.locator("code").filter({hasText:prompt}).locator("..").locator("button.ag-quiet");
+  const detailCopied = page.waitForResponse(r => new URL(r.url()).pathname === "/api/copy");
+  await detailCopy.click(); await detailCopied;
+  await page.getByText(copiedLabels[lang], {exact:true}).waitFor();
+  assert.deepEqual(copies,[prompt,prompt]); assert.deepEqual(errors,[]);
   await context.close();
  });
 });

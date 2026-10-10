@@ -1487,8 +1487,8 @@ function connectPanel(a, { fields, fieldBtn }) {
   if (a.launch) {
     const cp = el("button", "ag-quiet", t("Copy"));
     cp.type = "button";
-    cp.onclick = () => copy(a.launch, t("Launch command"), null, t("Copied — run it to start {name} on magpie", { name: a.name }));
-    kv(t("Start it with"), line(code(a.launch), cp));
+    cp.onclick = () => copy(a.launch, t(a.id === "grok-bot" ? "Installation prompt" : "Launch command"), null, a.id === "grok-bot" ? t("Copied — send it to Grok Bot") : t("Copied — run it to start {name} on magpie", { name: a.name }));
+    kv(t(a.id === "grok-bot" ? "Installation prompt" : "Start it with"), line(code(a.launch), cp));
   }
   // the files magpie changed, and the way back
   const foot = el("div", "ag-foot");

@@ -31,6 +31,9 @@ func TestAsideInitialReadOffersStageWithoutWrites(t *testing.T) {
 }
 
 func TestAsideOfflineDisconnectRestoresWithoutDaemon(t *testing.T) {
+	wasApps := appFolders
+	appFolders = func() []string { return nil }
+	t.Cleanup(func() { appFolders = wasApps })
 	settings, models := asideHome(t)
 	before := readFile(settings)
 	a := mustFindAside(t)
