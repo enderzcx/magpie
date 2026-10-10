@@ -110,7 +110,7 @@ func grokBotCommand(model, mode, targetURL, apiKey string) (string, error) {
 	for i := range args {
 		args[i] = grokBotShell(args[i])
 	}
-	return fmt.Sprintf("mkdir -p /workspace/grok-switch && curl -fsSL 'https://raw.githubusercontent.com/enderzcx/grok-bot-switch/main/dist/%s' -o /workspace/grok-switch/%s && node /workspace/grok-switch/%s %s", GrokSwitchCoreScript, GrokSwitchCoreScript, GrokSwitchCoreScript, strings.Join(args, " ")), nil
+	return fmt.Sprintf("mkdir -p /workspace/grok-switch && curl -fsSL 'https://github.com/enderzcx/grok-bot-switch/releases/download/v0.8.6/%s' -o /workspace/grok-switch/%s && node /workspace/grok-switch/%s %s", GrokSwitchCoreScript, GrokSwitchCoreScript, GrokSwitchCoreScript, strings.Join(args, " ")), nil
 }
 
 func GrokBotPrompt(model, cmd string) string {
