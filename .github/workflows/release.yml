@@ -2,7 +2,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -61,6 +60,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Verify runner architecture
+        run: test "$(go env GOARCH)" = "${{ matrix.arch }}"
       - name: Linux dependencies
         if: matrix.family == 'linux'
         run: |
