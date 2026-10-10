@@ -2,6 +2,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -9,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Require a version tag
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || { echo 'Select a v* tag to release'; exit 1; }
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
