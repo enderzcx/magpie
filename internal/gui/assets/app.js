@@ -2971,11 +2971,11 @@ function launchButton(a) {
   const b = el("button", "field extra launch");
   b.type = "button";
   b.append(svg(LAUNCH_GLYPH, 13, 1.5));
-  b.title = t("{name} takes magpie only from its environment · click to copy the command that starts it:", { name: a.name }) + "\n" + a.launch;
+  b.title = (a.id === "grok-bot" ? t("Copy installation prompt") : t("{name} takes magpie only from its environment · click to copy the command that starts it:", { name: a.name })) + "\n" + a.launch;
   b.setAttribute("aria-label", b.title);
   b.onclick = (ev) => {
     ev.stopPropagation();
-    copy(a.launch, t("Launch command"), null, t("Copied — run it to start {name} on magpie", { name: a.name }));
+    copy(a.launch, t(a.id === "grok-bot" ? "Installation prompt" : "Launch command"), null, a.id === "grok-bot" ? t("Copied — send it to Grok Bot") : t("Copied — run it to start {name} on magpie", { name: a.name }));
   };
   return b;
 }

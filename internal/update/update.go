@@ -34,7 +34,7 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is magpie's home; its /api/latest is the update feed.
+// Site is the upstream project website. This fork uses its own release feed.
 const Site = "https://usemagpie.ai"
 
 // Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
@@ -43,7 +43,7 @@ func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
 	}
-	return Site + "/api/latest"
+	return "https://github.com/enderzcx/magpie/releases/latest/download/update.json"
 }
 
 // Release is one published version.

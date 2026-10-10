@@ -1,3 +1,5 @@
+> Grok Bot fork: [downloads](https://github.com/enderzcx/magpie/releases/latest). Configure with `magpie grok-bot model magpie/PROVIDER/MODEL`, then `magpie grok-bot launch`. Gateway mode additionally needs `magpie grok-bot mode gateway` and `magpie grok-bot gateway-url https://YOUR-GATEWAY/v1`, with a sharing key enabled in Settings. macOS packages are ad-hoc signed, without Apple notarization.
+
 <div align="center">
 
 <a href="https://usemagpie.ai/zh/"><img src="site/public/img/icon-256.png" width="112" alt="magpie"></a>

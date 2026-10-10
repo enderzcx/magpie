@@ -362,7 +362,11 @@ func run(args []string) error {
 		return list([]*agent.Agent{a}, true, -1)
 	case 2:
 		if args[1] == "launch" && a.Launch != nil {
-			fmt.Println(a.Launch())
+			prompt := a.Launch()
+			if prompt == "" {
+				return fmt.Errorf("%s", a.Notice())
+			}
+			fmt.Println(prompt)
 			return nil
 		}
 		if args[1] == "default" {

@@ -1,51 +1,94 @@
 name: Release
-
-# Pushing a v* tag hands off to yetone/magpie-releases, which builds, signs,
-# notarises and publishes magpie there; that repo is where people download
-# from, and the signing secrets live only there.
-
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., 0.1.0 — no v prefix; the v tag must exist)'
-        required: true
-        type: string
-
+permissions:
+  contents: write
 jobs:
-  trigger-release:
+  verify:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Get version
-        id: version
-        env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            REF="$GITHUB_REF_NAME"
-            VERSION="${REF#v}"
-          else
-            VERSION="$INPUT_VERSION"
-            REF="v$INPUT_VERSION"
-          fi
-          # a newline or quote would add outputs or break the JSON below
-          [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "bad version: $VERSION" >&2; exit 1; }
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Triggering release for version: $VERSION (ref: $REF)"
-
-      - name: Trigger release workflow in magpie-releases
-        uses: peter-evans/repository-dispatch@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          # PAT with contents write on yetone/magpie-releases.
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-          repository: yetone/magpie-releases
-          event-type: release
-          client-payload: '{"ref": "${{ steps.version.outputs.ref }}", "version": "${{ steps.version.outputs.version }}"}'
-
-      - name: Output status
-        run: echo "Watch the build at https://github.com/yetone/magpie-releases/actions"
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: go vet -tags nogui ./...
+      - run: go test -tags nogui ./...
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make release-cli release-windows VERSION="${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: dist/*
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: amd64
+            family: darwin
+          - os: macos-15-arm64
+            arch: arm64
+            family: darwin
+          - os: ubuntu-24.04
+            arch: amd64
+            family: linux
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            family: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Linux dependencies
+        if: matrix.family == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev xvfb dbus-x11
+      - name: Build macOS app
+        if: matrix.family == 'darwin'
+        run: |
+          make app VERSION="${GITHUB_REF_NAME#v}"
+          codesign --force --deep --sign - magpie.app
+          mkdir -p dist
+          ditto -c -k --keepParent magpie.app dist/magpie-darwin-${{ matrix.arch }}.zip
+          ./magpie --version | grep -F "magpie ${GITHUB_REF_NAME#v}"
+      - name: Build Linux app
+        if: matrix.family == 'linux'
+        run: |
+          make release-linux TAGS='production gtk3' VERSION="${GITHUB_REF_NAME#v}"
+          dist/magpie-linux-${{ matrix.arch }} --version | grep -F "magpie ${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.family }}-${{ matrix.arch }}
+          path: dist/*
+  publish:
+    needs: [verify, cli, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Prepare verified update feed
+        run: python3 scripts/release-feed.py "${GITHUB_REF_NAME#v}" dist docs/releases/grokbot-1.md
+      - name: Publish fork release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --draft --title "Magpie ${GITHUB_REF_NAME#v} — Grok Bot" --notes-file docs/releases/grokbot-1.md
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
