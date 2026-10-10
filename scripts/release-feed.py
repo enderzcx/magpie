@@ -15,7 +15,7 @@ expected = {f"magpie-cli-{os}-{arch}{'.exe' if os == 'windows' else ''}" for os,
     ("darwin", "amd64"), ("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"),
     ("windows", "amd64"), ("windows", "arm64"), ("android", "arm64")]}
 expected |= {f"magpie-{os}-{arch}{'.zip' if os == 'darwin' else '.exe' if os == 'windows' else ''}" for os in ["darwin", "linux", "windows"] for arch in ["amd64", "arm64"]}
-if {p.name for p in files} != expected:
+if {p.name for p in files} != expected or any(p.stat().st_size == 0 for p in files):
     raise SystemExit("release asset set is incomplete or unexpected")
 assets = {p.name: {"url": f"{base}/{p.name}", "size": p.stat().st_size, "sha256": hashlib.file_digest(p.open("rb"), "sha256").hexdigest()} for p in files}
 notes = Path(notes_path).read_text()

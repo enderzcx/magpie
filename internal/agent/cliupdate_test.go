@@ -329,6 +329,8 @@ func TestUpdateCLI(t *testing.T) {
 // use a SOCKS5 proxy (#1409): it is given the bridge in front of it. npm,
 // which can, is given the proxy as it is.
 func TestUpdateWithBunBridgesSOCKS(t *testing.T) {
+	t.Setenv("NO_PROXY", "localhost")
+	t.Setenv("no_proxy", "localhost")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const socks = "socks5://127.0.0.1:4401"
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
@@ -337,7 +339,7 @@ func TestUpdateWithBunBridgesSOCKS(t *testing.T) {
 	proxies := func(env []string) []string {
 		var out []string
 		for _, kv := range env {
-			if k, v, _ := strings.Cut(kv, "="); strings.HasSuffix(strings.ToUpper(k), "_PROXY") && v != "" {
+			if k, v, _ := strings.Cut(kv, "="); strings.HasSuffix(strings.ToUpper(k), "_PROXY") && !strings.EqualFold(k, "NO_PROXY") && v != "" {
 				out = append(out, v)
 			}
 		}

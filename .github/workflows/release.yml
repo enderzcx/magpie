@@ -18,6 +18,14 @@ jobs:
           bun-version: 1.4.2
       - run: go vet -tags nogui ./...
       - run: go test -tags nogui ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Browser regression gate
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-tests" playwright@1.62.1
+          node "$RUNNER_TEMP/browser-tests/node_modules/playwright/cli.js" install --with-deps chromium webkit
+          NODE_PATH="$RUNNER_TEMP/browser-tests/node_modules" node --test internal/gui/tests/grokbot-launch.test.cjs internal/gui/tests/agy-launch.test.cjs
   cli:
     runs-on: ubuntu-latest
     steps:
@@ -35,10 +43,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-15-intel
             arch: amd64
             family: darwin
-          - os: macos-15-arm64
+          - os: macos-latest
             arch: arm64
             family: darwin
           - os: ubuntu-24.04
