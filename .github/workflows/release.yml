@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: read
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -40,6 +41,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: cli-windows
+          retention-days: 7
           path: dist/*
   desktop:
     strategy:
@@ -87,6 +89,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.family }}-${{ matrix.arch }}
+          retention-days: 7
           path: dist/*
   publish:
     needs: [verify, cli, desktop]
@@ -99,6 +102,18 @@ jobs:
           merge-multiple: true
       - name: Prepare verified update feed
         run: python3 scripts/release-feed.py "${GITHUB_REF_NAME#v}" dist docs/releases/grokbot-1.md
+      - name: Require green source CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          green=0
+          for attempt in $(seq 1 90); do
+            result=$(gh run list --workflow test.yml --commit "$GITHUB_SHA" --json status,conclusion --jq 'if any(.[]; .conclusion == "success") then "success" elif any(.[]; .status == "completed" and .conclusion != "cancelled") then "failure" else "waiting" end')
+            if [ "$result" = success ]; then green=1; break; fi
+            if [ "$result" = failure ]; then echo 'Source CI failed'; exit 1; fi
+            sleep 10
+          done
+          test "$green" = 1
       - name: Publish fork release
         env:
           GH_TOKEN: ${{ github.token }}
