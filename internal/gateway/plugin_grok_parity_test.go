@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // besideFake installs the fake plugin as the plugin of the built-in id,
@@ -23,10 +23,7 @@ import (
 // key, its requests going to up; it gives the provider's id.
 func besideFake(t *testing.T, id string, up http.Handler) string {
 	t.Helper()
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	fresh(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Setenv("FAKE_ID", id)
@@ -213,4 +210,16 @@ func TestGrokPluginGetsAgentMessageAsUser(t *testing.T) {
 		t.Fatalf("asked %d times", len(sent))
 	}
 	checkAgentMessageSent(t, sent[0])
+}
+
+// A Grok model the Grok plugin serves writes Codex's integers as floats
+// too; Codex reads them as integers, as from a relay
+// (TestGrokCallsGiveCodexIntegers), streamed in deltas or whole.
+func TestGrokPluginCallsGiveCodexIntegers(t *testing.T) {
+	c := integralCases(t)[0]
+	t.Setenv("FAKE_GROK", "1")
+	pid := besideFake(t, "grok", responsesCall(c.tool, c.args, someCuts(c.args)["by byte"]))
+	for _, stream := range []bool{true, false} {
+		checkResponses(t, c, askGrok(t, "/v1/responses", codexShellTurn(pid+"/grok-4.7", stream)), stream)
+	}
 }

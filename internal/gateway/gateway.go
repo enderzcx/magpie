@@ -562,8 +562,9 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 // quotas is what is left of every subscription, plan and key magpie has,
 // for an agent choosing where to send its work (magpie quota --json is the
 // same). It names the accounts and their balances, so it answers this
-// machine, and another only with the key of the gateway shared on the
-// local network — never a gateway MAGPIE_ADDR opens without one.
+// machine, and another only with an enabled gateway key, which lanGuard
+// asks of it while the gateway is shared or MAGPIE_ADDR puts it on the
+// network.
 func (s *Server) quotas(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
 		writeError(w, provider.Chat, http.StatusForbidden, "magpie's quotas are told to another machine only when magpie is shared on the local network (Settings → Share on local network) and the request carries its API key (Authorization: Bearer <key> or x-api-key: <key>)")
@@ -656,8 +657,10 @@ func modelObject(e provider.Entry) map[string]any {
 	if e.Context > 0 {
 		m["context_window"], m["context_length"], m["max_input_tokens"] = e.Context, e.Context, e.Context
 	}
-	if e.Output > 0 {
-		m["max_output_tokens"] = e.Output
+	// the reply limit, kept within that window as agents are told it
+	// (#1438)
+	if out := e.PublishedOutput(); out > 0 {
+		m["max_output_tokens"] = out
 	}
 	// for another magpie that has this one as its provider (remote-magpie):
 	// the APIs a request for the model goes on as it is, so it sends each
@@ -710,8 +713,8 @@ func cursorLocalModel(m map[string]any, e provider.Entry) {
 	if e.Context > 0 {
 		c["context_length"] = e.Context
 	}
-	if e.Output > 0 {
-		c["max_output_tokens"] = e.Output
+	if out := e.PublishedOutput(); out > 0 {
+		c["max_output_tokens"] = out
 	}
 	if e.Images {
 		c["supports_vision"] = true
@@ -837,6 +840,19 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get(provider.VideomakersHeader) != "" {
 		data = append(data, videomakerObjects()...)
+	}
+	if r.Header.Get(provider.DecidersHeader) != "" {
+		deciders := keyAllowed(r, provider.Deciders())
+		for i := range deciders {
+			deciders[i].Name = cmp.Or(deciders[i].Name, deciders[i].Model)
+		}
+		labels := provider.Labels(deciders)
+		for i, e := range deciders {
+			m := modelObject(e)
+			m["kind"], m["magpie_label"] = "decision", labels[i]
+			m["native_endpoints"] = []string{"/v1/systemone"}
+			data = append(data, m)
+		}
 	}
 	// ?format=text: the ids one a line, to paste into a client that takes
 	// its models typed by hand, one a line, and asks no list of its own
@@ -1335,7 +1351,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			turnedAway()
 			return
 		}
-		msg := fmt.Sprintf("magpie knows no model %q", call.Model)
+		msg := unknownModel(call.Model, "")
 		if g, ok := provider.DisabledGroup(asked); ok {
 			call.Error = "group switched off"
 			msg = fmt.Sprintf("the routing group %s is switched off in Magpie, so %q is not served; switch it on again on Magpie's Routing page to use it", g.Name, call.Model)
@@ -1343,10 +1359,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// a group of its own with nothing in it now — its patterns
 			// match no model served (#766) — said so, not the whole list
 			msg = emptyGroupError(g)
-		} else if ids := provider.IDs(); len(ids) > 0 {
-			msg += "; it has " + strings.Join(ids, ", ")
-		} else {
-			msg += "; add a provider in magpie first"
 		}
 		writeError(w, from, 404, msg)
 		turnedAway()
@@ -2024,6 +2036,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		hw.settle()
 		if hw.passing {
 			clientResponseID = call.Usage.ResponseID
+		}
+		if !hw.passing && modelRetired(hw.code(), hw.errBody()) {
+			// the vendor's list may still name it (OpenCode Zen's
+			// exo-free): it leaves the lists of this provider's models
+			provider.Retire(c.p.ID, c.model)
 		}
 		outgrew := false // a failure that didn't say so was the request's length
 		if !hw.passing && !hw.refused && hw.code() >= 400 {
@@ -2856,12 +2873,21 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		// generate route reads it from the body
 		body = withoutFields(body, "model")
 	}
+	var betas []string
 	if to == provider.Anthropic {
 		body = s.bodyBetas(p, body)
 		body = s.withoutRefusedShapes(p, body)
 		// what every path to an Anthropic endpoint sends, relayed or
 		// built, with the model named as the vendor names it
 		body = adaptiveThinking(body)
+		body = thinkingOffAsTaken(body, path)
+		body = samplingAsTaken(body, path)
+		asked := askedBetas(in)
+		if gjson.GetBytes(body, "speed").String() == "fast" && provider.HostOf(p.Base(to)) == "api.anthropic.com" {
+			asked = append(slices.Clone(asked), claudeFastBeta) // a group's member sent fast
+		}
+		// auto mode's review goes to Claude alone (automode.go)
+		betas, body = s.serverReview(p, asked, body)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Base(to)+path, bytes.NewReader(body))
 	if err != nil {
@@ -2887,12 +2913,8 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 				}
 			}
 		}
-		asked := askedBetas(in)
-		if gjson.GetBytes(body, "speed").String() == "fast" && provider.HostOf(p.Base(to)) == "api.anthropic.com" {
-			asked = append(slices.Clone(asked), claudeFastBeta) // a group's member sent fast
-		}
-		if bs := s.betas(p, asked); len(bs) > 0 {
-			req.Header.Set("anthropic-beta", strings.Join(bs, ","))
+		if len(betas) > 0 {
+			req.Header.Set("anthropic-beta", strings.Join(betas, ","))
 		} else {
 			req.Header.Del("anthropic-beta")
 		}
@@ -3116,6 +3138,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto != provider.Anthropic {
 		body = s.withoutRefused(p.ID, proto, body)
 	}
+	// a conversation the client ended with the assistant's message, to a
+	// model that took no prefill before, is asked with a user turn after
+	// it (prefill.go, #1447)
+	turnAfter := (proto == provider.Chat || proto == provider.Responses) && !s.fits(p.ID, prefillRefused(model), proto)
+	if turnAfter {
+		body, _ = userLastBody(proto == provider.Chat, body)
+	}
 	// Codex's image tool, which a vendor that knows no namespaces turned
 	// away before (#949)
 	dropImage := proto == provider.Responses && mayDropImageTool(p)
@@ -3152,6 +3181,21 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		var ms []string
 		if proto == provider.Chat {
 			ms = refusedInMessages(res.StatusCode, b, body)
+		}
+		if len(fs) == 0 && len(ms) == 0 && !turnAfter && refusesPrefill(res.StatusCode, b) {
+			// the model takes no prefill (#1447: Volcengine's Agent Plan
+			// for Codex's resumed reply): the conversation is asked once
+			// more with a user turn after the assistant's message, and so
+			// from then on
+			if nb, ok := userLastBody(proto == provider.Chat, body); ok {
+				turnAfter = true
+				refused = append(refused, prefillRefused(model))
+				body = nb
+				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+				}
+				continue
+			}
 		}
 		if len(fs) == 0 && len(ms) == 0 && rootUnionRefusal.Match(b) {
 			// a tool's parameters refused for a union at their root
@@ -3266,7 +3310,19 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
-		if nb, ok := withoutThinkingOff(body); ok && (alwaysThinks.Match(b) || mandatoryReasoning.Match(b)) {
+		// Sonnet 5.5 by a name thinkingOffAsTaken doesn't know asks for
+		// between_tools in place of disabled (#1454)
+		if nb, ok := withBetweenTools(body); ok && asksBetweenTools.Match(b) {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+			}
+		} else if nb, ok := withoutThinkingOff(body); ok && (alwaysThinks.Match(b) || mandatoryReasoning.Match(b) || thinkingOffRefused.Match(b)) {
+			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
+			}
+		} else if nb, ok := withoutSampling(body); ok && samplingDeprecated.Match(b) {
+			// a Claude by a name samplingAsTaken doesn't know refusing
+			// temperature, top_p or top_k (#1454)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
 				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
@@ -3332,6 +3388,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if named != nil {
 		spaces = &nsTidy{named: named, sse: sse}
 	}
+	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
+	// (grok_integral.go, #1431); any other model's reply goes as it came
+	var ints *intTidy
+	if (proto == provider.Responses || proto == provider.Chat || proto == provider.Anthropic) && (grokModel(model) || grokModel(upstream)) {
+		ints = &intTidy{proto: proto, sse: sse}
+	}
 	buf := make([]byte, 32<<10)
 	var rerr error
 	for {
@@ -3354,6 +3416,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if spaces != nil {
 				out = spaces.write(out)
 			}
+			if ints != nil {
+				out = ints.write(out)
+			}
 			if sigs != nil {
 				out = sigs.write(out)
 			}
@@ -3372,6 +3437,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	// what's held at the end goes through the filters after the one
 	// that held it
 	sign := func(out []byte) []byte {
+		if ints != nil {
+			out = ints.write(out)
+		}
 		if sigs != nil {
 			return sigs.write(out)
 		}
@@ -3402,6 +3470,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if spaces != nil {
 		w.Write(sign(spaces.flush()))
+	}
+	if ints != nil {
+		out := ints.flush()
+		if sigs != nil {
+			out = sigs.write(out)
+		}
+		w.Write(out)
 	}
 	if sigs != nil {
 		w.Write(sigs.flush())
@@ -3584,6 +3659,11 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		if req.Format != nil && !s.fits(p.ID, formatRefused(model), to) {
 			req = req.inSystem()
 		}
+		if req.LastIsTurn && !req.Resume && req.endsWithAssistant() && !s.fits(p.ID, prefillRefused(model), to) {
+			// a model that takes no prefill is asked to answer after the
+			// client's last, assistant, message (prefill.go, #1447)
+			req = req.userLast()
+		}
 		if to == provider.Anthropic && p.IsBedrock() && req.Metadata != nil {
 			// not the plain id Bedrock checks metadata.user_id against (#176)
 			r := *req
@@ -3658,6 +3738,17 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			// model is asked again at its lowest, and so from then on
 			s.markUnfit(p.ID, offRefused(model), to)
 			continue
+		}
+		if req.endsWithAssistant() && refusesPrefill(res.StatusCode, b) {
+			// the model takes no prefill (#1447), remembered for it alone.
+			// A conversation the client ended with the assistant's message
+			// is asked again with a user turn after it; magpie's own
+			// continuation of a cut reply isn't (streamTranslated)
+			s.markUnfit(p.ID, prefillRefused(model), to)
+			if req.LastIsTurn && !req.Resume {
+				req = req.userLast()
+				continue
+			}
 		}
 		if req.GeminiCompat && refusesThinkingConfig(res.StatusCode, b) {
 			// Gemini's own fields turned away (a proxy that isn't in front
@@ -4100,6 +4191,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// a Grok model's 2500.0 in a call's arguments, which Codex turns away
+	// (grok_integral.go, #1431)
+	request.Grok = grokServed(wiresOf(r.Context()), p, model)
 	if from == provider.Anthropic {
 		// Claude Code's auto mode classifier, on a model that reasons
 		// whatever it is told (#250)
@@ -4305,6 +4399,7 @@ func parse(proto provider.Protocol, body []byte) (*Request, error) {
 	}
 	// a call's id may carry Gemini's thought signature (gemini_signature.go)
 	unsignCalls(req)
+	req.LastIsTurn = proto == provider.Chat || proto == provider.Responses
 	if req.ToolChoice == "required" && len(req.Tools) == 0 && !req.WebSearch && requiredAllowlist(proto, body) {
 		return nil, fmt.Errorf("required tool choice has no callable tools after filtering")
 	}
@@ -4414,7 +4509,11 @@ func relayEvents(events <-chan Event, sw *sseWriter, enc streamEncoder, see func
 func encoder(proto provider.Protocol, w *sseWriter, r *Request, usage ...*Usage) streamEncoder {
 	enc := makeEncoder(proto, w, r)
 	if len(usage) > 0 && usage[0] != nil {
-		return &usageEncoder{streamEncoder: enc, usage: usage[0]}
+		enc = &usageEncoder{streamEncoder: enc, usage: usage[0]}
+	}
+	if r.Grok {
+		// outside usageEncoder, which reads its encoder's reply id
+		enc = &wholeEncoder{streamEncoder: enc}
 	}
 	return enc
 }
@@ -4434,6 +4533,9 @@ func makeEncoder(proto provider.Protocol, w *sseWriter, r *Request) streamEncode
 
 func render(proto provider.Protocol, res Result, r *Request) []byte {
 	model := r.Model
+	if r.Grok {
+		res = wholeResult(res)
+	}
 	switch proto {
 	case provider.Chat:
 		return renderChat(res, model)

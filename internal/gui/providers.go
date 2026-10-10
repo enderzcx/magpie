@@ -36,7 +36,7 @@ type modelJSON struct {
 	Own      bool     `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
 	On       bool     `json:"on"`                  // exposed to agents
 	Context  int      `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
-	Output   int      `json:"output,omitempty"`    // the reply limit agents are told (provider.ReplyLimit)
+	Output   int      `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
 	Listed   int      `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
 	Max      int      `json:"max,omitempty"`       // the most its context may be set to, above Listed
 	Free     bool     `json:"free,omitempty"`      // costs the subscription nothing
@@ -126,9 +126,9 @@ type providerJSON struct {
 	// System One question (provider.AsksDecideModels): a mixed
 	// provider's Jev too, beside its conversation models
 	DecideTest bool `json:"decideTest,omitempty"`
-	// Deciders are its decision models when it lists them apart from its
-	// chat models (OpenRouter's): those, and no Jev-named chat model
-	Deciders []string `json:"deciders,omitempty"`
+	// Deciders explicitly identifies decision models for OpenRouter and
+	// remote magpie. An empty remote list suppresses name-based guessing.
+	Deciders *[]string `json:"deciders,omitempty"`
 
 	Key struct {
 		Set      bool   `json:"set"`
@@ -319,10 +319,13 @@ type gatewayJSON struct {
 	URL     string   `json:"url"`
 	LAN     bool     `json:"lan"`
 	LANURLs []string `json:"lanURLs,omitempty"`
-	Open    bool     `json:"open,omitempty"` // listens beyond loopback with no key: anyone reaching it is let in
-	Running bool     `json:"running"`
-	Mine    bool     `json:"mine"`   // this process serves it
-	Window  bool     `json:"window"` // the magpie serving it shows its routing
+	// OnNetwork: MAGPIE_ADDR puts it beyond loopback (a server, a Docker
+	// image), so every caller is shown a gateway key, and LAN is true too:
+	// callers from elsewhere, a container's host among them, need one
+	OnNetwork bool `json:"onNetwork,omitempty"`
+	Running   bool `json:"running"`
+	Mine      bool `json:"mine"`   // this process serves it
+	Window    bool `json:"window"` // the magpie serving it shows its routing
 	// Version is another magpie's, serving it, and Older says it is older
 	// than this one: agents' requests are then sent as that version sends
 	// them, without this one's fixes (#506)
@@ -545,7 +548,8 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		if imageSet {
 			images = said
 		}
-		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: p.WindowOf(m), Output: p.ReplyLimitIn(m, set), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
+		window := p.WindowOf(m)
+		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
 		if i := slices.IndexFunc(most, func(c catalog.Model) bool { return c.ID == m.ID }); j.Max == 0 && i >= 0 {
 			j.Max = most[i].MaxContext
 		}
@@ -585,14 +589,21 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		seen[m.ID] = true
 		out.Models = append(out.Models, named(m, exposed[m.ID]))
 	}
-	// OpenRouter's decision models, listed apart from its chat models
-	// (ARNO on Discord), after them
+	// Keep an explicit empty list for remote magpie: the editor must not
+	// guess that a Jev Router chat model answers System One.
+	var deciders []string
+	if p.IsRemoteMagpie() {
+		deciders = []string{}
+	}
 	for _, m := range p.DecisionModels() {
-		out.Deciders = append(out.Deciders, m.ID)
+		deciders = append(deciders, m.ID)
 		if !seen[m.ID] {
 			seen[m.ID] = true
 			out.Models = append(out.Models, named(m, exposed[m.ID]))
 		}
+	}
+	if deciders != nil {
+		out.Deciders = &deciders
 	}
 	// picks the vendor list does not know go first, so they are visible
 	for _, m := range p.Exposed() {
@@ -680,8 +691,8 @@ func providersState() providersJSON {
 		s.Presets = append(s.Presets, presetJSON{PresetDef: pr, Added: have[pr.ID], ZhipuTeam: team, AccessKey: provider.TakesVolcAccessKey(bases)})
 	}
 	cat := provider.Catalog()
-	s.Gateway = gatewayJSON{URL: gateway.URL(), Open: gateway.OpenToAnyone(), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
-	s.Gateway.LAN = settings.Load().LAN
+	s.Gateway = gatewayJSON{URL: gateway.URL(), OnNetwork: gateway.OnNetwork(), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
+	s.Gateway.LAN = settings.Load().LAN || s.Gateway.OnNetwork
 	if s.Gateway.LAN {
 		s.Gateway.LANURLs = gateway.LANURLs()
 	}
@@ -689,7 +700,7 @@ func providersState() providersJSON {
 		if e.Group == "" {
 			continue
 		}
-		g := gwGroupJSON{ID: e.ID, Name: e.Name, Icons: e.Icons, Efforts: e.Efforts, Images: e.Images, Context: e.Context, Output: e.Output}
+		g := gwGroupJSON{ID: e.ID, Name: e.Name, Icons: e.Icons, Efforts: e.Efforts, Images: e.Images, Context: e.Context, Output: e.PublishedOutput()}
 		if _, ms, ok := findGroup(e.ID); ok {
 			for _, m := range ms {
 				if id := m.Provider.ID + "/" + m.Model; !slices.Contains(g.Members, id) {
@@ -1600,17 +1611,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		st.Moved = moved
 		writeJSON(rw, st)
 	})
-	// Codex's background app-server, left on the account before a switch:
-	// restarting it (which ends the Codex sessions on it), or letting it be.
+	// Codex's background app-server, left on the account before a switch
+	// or on the model list before a change (the Agents row's Restart):
+	// restarting it (Codex 0.162's sessions on it reconnect, after a turn
+	// running, for up to a minute; an older Codex's end), or letting it be.
 	mux.HandleFunc("POST /api/codex/daemon/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("action") {
 		case "restart":
-			ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 			defer cancel()
 			if err := provider.RestartCodexDaemon(ctx); err != nil {
 				fail(rw, err)
 				return
 			}
+			agent.CodexDaemonRestarted()
 		case "dismiss":
 			provider.DismissCodexDaemon()
 		default:
